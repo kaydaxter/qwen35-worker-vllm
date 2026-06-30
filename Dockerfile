@@ -1,17 +1,13 @@
-# vLLM 0.20.2 (worker base) + parche text-only para Qwen3_5MoeForCausalLM.
-# El entry-point de vLLM no se dispara (motor en subproceso), asi que copiamos
-# AMBOS modulos (register + boot) directamente a site-packages y forzamos la
-# carga con un .pth que se ejecuta en CADA proceso de Python.
+# Worker vLLM 0.20.2 + parche TEXT-ONLY para Qwen3_5MoeForCausalLM.
+# El parche se INYECTA en /src/engine.py justo antes de from_engine_args
+# (vLLM ya 100% importado -> sin circular import). Sin hooks, sin .pth.
 FROM runpod/worker-v1-vllm:v2.22.4
 
-COPY qwen35_register.py pyproject.toml qwen35_boot.py /opt/qwen35-register/
+COPY qwen35_register.py patch_engine.py /tmp/
 
-RUN pip install --no-cache-dir /opt/qwen35-register/ || true; \
-    PYDIR="$(python3 -c 'import site; print(site.getsitepackages()[0])')" && \
-    cp /opt/qwen35-register/qwen35_register.py "$PYDIR/qwen35_register.py" && \
-    cp /opt/qwen35-register/qwen35_boot.py "$PYDIR/qwen35_boot.py" && \
-    printf 'import qwen35_boot\n' > "$PYDIR/zzz_qwen35.pth" && \
-    echo "[build] instalado en $PYDIR" && \
-    ls -la "$PYDIR/qwen35_register.py" "$PYDIR/qwen35_boot.py" "$PYDIR/zzz_qwen35.pth" && \
-    echo "[build] sanity:" && \
-    python3 -c "import qwen35_register, qwen35_boot; print('AMBOS modulos importan OK')"
+RUN PYDIR="$(python3 -c 'import site; print(site.getsitepackages()[0])')" && \
+    cp /tmp/qwen35_register.py "$PYDIR/qwen35_register.py" && \
+    echo "[build] register copiado a $PYDIR" && \
+    python3 /tmp/patch_engine.py && \
+    python3 -c "import qwen35_register; print('[build] register importa OK')" && \
+    grep -n "qwen35_register" /src/engine.py
