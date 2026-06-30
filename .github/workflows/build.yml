@@ -1,26 +1,32 @@
 name: build-image
 
-# Construye la imagen en la nube de GitHub (sin GPU, sin pods) y la sube a
-# GHCR. Se dispara en cada push a main y también a mano (workflow_dispatch).
 on:
-  push:
-    branches: [main]
+  push: { branches: [main] }
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    permissions: { contents: read, packages: write }
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/login-action@v3
+      # La imagen base (worker-v1-vllm, CUDA+torch+vLLM) ronda los 25 GB y el
+      # runner gratis solo trae ~14 GB libres. Liberamos ~25-30 GB borrando
+      # toolchains preinstaladas que no usamos.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+          docker-images: false
+
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
 
       - uses: docker/build-push-action@v6
         with:
