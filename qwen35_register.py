@@ -27,15 +27,32 @@ Entry point (pyproject / setup.py of the plugin package):
     qwen35_textonly = "qwen35_register:register"
 """
 
-import logging
+import sys
+import traceback
 
-logger = logging.getLogger("qwen35_textonly_plugin")
+
+class _P:
+    """Print-based logger so messages are ALWAYS visible in RunPod logs
+    (a logging.getLogger handler may be swallowed)."""
+    def info(self, m):
+        print("[qwen35]", m, file=sys.stderr, flush=True)
+    def warning(self, m):
+        print("[qwen35][warn]", m, file=sys.stderr, flush=True)
+    def error(self, m):
+        print("[qwen35][err]", m, file=sys.stderr, flush=True)
+    def exception(self, m):
+        print("[qwen35][exc]", m, file=sys.stderr, flush=True)
+        traceback.print_exc()
+
+
+logger = _P()
 
 # Architectures this plugin owns. Both are aliased to the text-only handler.
 _OURS = frozenset({"Qwen3_5MoeForCausalLM", "Qwen3_5ForCausalLM"})
 
 
 def register():
+    print("[qwen35] >>> plugin register() EJECUTANDO <<<", file=sys.stderr, flush=True)
     # =====================================================================
     # (1) Aliases by STRING (lazy). Keeps the architecture resolvable even
     #     before the heavier patches run, and matches the already-working
@@ -255,3 +272,5 @@ def register():
                          "skipping class re-register")
     except Exception:
         logger.exception("[qwen35] (4) class-object re-register failed")
+
+    print("[qwen35] >>> plugin register() COMPLETADO <<<", file=sys.stderr, flush=True)
