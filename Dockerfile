@@ -12,8 +12,8 @@ ENTRYPOINT []
 # Instalamos pagestorm desde el TARBALL (la imagen base no trae git, asi que
 # "git+https://..." falla). El tarball no necesita git.
 RUN pip install --no-cache-dir runpod "https://github.com/Pageshift-ai/pagestorm/archive/refs/heads/master.tar.gz" \
- && python -c "import pagestorm, runpod; print('[build] pagestorm + runpod importan OK')"
+ && python3 -c "import pagestorm, runpod; print('[build] pagestorm + runpod importan OK')"
 
 COPY handler.py /handler.py
 
-CMD ["python", "-u", "/handler.py"]
+CMD ["python3", "-u", "/handler.py"]
