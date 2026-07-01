@@ -9,7 +9,9 @@ ENTRYPOINT []
 
 # runpod SDK + el paquete pagestorm (arrastra vllm>=0.23 -ya presente-,
 # transformers>=5.12.1, jinja2, huggingface_hub>=1.21).
-RUN pip install --no-cache-dir runpod "git+https://github.com/Pageshift-ai/pagestorm.git" \
+# Instalamos pagestorm desde el TARBALL (la imagen base no trae git, asi que
+# "git+https://..." falla). El tarball no necesita git.
+RUN pip install --no-cache-dir runpod "https://github.com/Pageshift-ai/pagestorm/archive/refs/heads/master.tar.gz" \
  && python -c "import pagestorm, runpod; print('[build] pagestorm + runpod importan OK')"
 
 COPY handler.py /handler.py
