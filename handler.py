@@ -105,7 +105,7 @@ def _build_body(inp):
     return None, None, None
 
 
-def _stream_gen(path, body, chat):
+def _iter_sse(path, body, chat):
     body = {**body, "stream": True}
     with urllib.request.urlopen(_req(path, body), timeout=900) as resp:
         for raw in resp:
@@ -126,23 +126,28 @@ def _stream_gen(path, body, chat):
 
 
 def handler(job):
+    """Generador (RunPod detecta streaming por is_generator(handler)).
+    stream=True -> yield de deltas de texto.
+    stream=False -> yield unico con el resultado completo (output = [dict])."""
     inp = (job or {}).get("input", {}) or {}
     path, body, chat = _build_body(inp)
     if path is None:
-        return {"error": "input necesita 'messages' o 'prompt'"}
+        yield {"error": "input necesita 'messages' o 'prompt'"}
+        return
     try:
         if inp.get("stream"):
-            return _stream_gen(path, body, chat)
-        with urllib.request.urlopen(_req(path, body), timeout=900) as r:
-            out = json.loads(r.read().decode())
-        text = (out["choices"][0]["message"]["content"] if chat
-                else out["choices"][0]["text"])
-        return {"text": text, "usage": out.get("usage")}
+            for delta in _iter_sse(path, body, chat):
+                yield delta
+        else:
+            with urllib.request.urlopen(_req(path, body), timeout=900) as r:
+                out = json.loads(r.read().decode())
+            text = (out["choices"][0]["message"]["content"] if chat
+                    else out["choices"][0]["text"])
+            yield {"text": text, "usage": out.get("usage")}
     except urllib.error.HTTPError as e:
-        # sin contenido de usuario en logs: solo codigo y cuerpo truncado al caller
-        return {"error": f"HTTP {e.code}", "body": e.read().decode()[:800]}
+        yield {"error": f"HTTP {e.code}", "body": e.read().decode()[:800]}
     except Exception as e:
-        return {"error": f"{type(e).__name__}: {e}"}
+        yield {"error": f"{type(e).__name__}: {e}"}
 
 
 try:
