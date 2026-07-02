@@ -46,7 +46,8 @@ cmd = [
     "--dtype", os.environ.get("DTYPE", "bfloat16"),
     "--max-model-len", os.environ.get("MAX_MODEL_LEN", "131072"),
     "--gpu-memory-utilization", os.environ.get("GPU_MEMORY_UTILIZATION", "0.95"),
-    "--disable-log-requests",  # los prompts de usuario NO van a logs
+    # nota: en vLLM 0.24 el log de requests viene APAGADO por defecto
+    # (--enable-log-requests es opt-in); no hace falta ningun flag.
 ]
 extra = os.environ.get("VLLM_EXTRA_ARGS", "").strip()
 if extra:
