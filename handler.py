@@ -1,72 +1,84 @@
-"""RunPod serverless worker que embebe el harness oficial `pagestorm`.
+"""Worker RunPod serverless sobre vLLM moderno (imagen oficial).
 
-Recibe {"input": {"prompt": "..."}} y ejecuta el pipeline por etapas del 24B
-(book_plan -> first_chapter_plan -> scene_breakdown -> first_chapter_text) con
-el guided decoding y los samplers oficiales, devolviendo el primer capitulo.
-
-El modelo (Mistral 24B, ~48 GB fp16) lo baja vLLM en la PRIMERA generacion y
-queda cacheado en el network volume (HF_HOME=/runpod-volume/hf).
+Arranca `vllm serve` (API OpenAI) como subproceso y reenvia los jobs de RunPod
+a localhost. Todo lo de vLLM es configurable por env sin rebuild:
+  MODEL_NAME, MAX_MODEL_LEN, GPU_MEMORY_UTILIZATION, VLLM_EXTRA_ARGS
 """
+import json
 import os
+import shlex
+import subprocess
+import sys
 import time
-import traceback
+import urllib.request
+import urllib.error
 
 import runpod
 
-from pagestorm.bundle import load_story_bundle
-from pagestorm.profiles import get_profile_by_repo_id
-from pagestorm.orchestrator import generate_full_book
+MODEL = os.environ.get("MODEL_NAME", "google/gemma-4-31B-it")
+PORT = "8000"
+BASE = f"http://127.0.0.1:{PORT}"
 
-REPO = os.environ.get(
-    "PAGESTORM_REPO",
-    "Pageshift-Entertainment/pagestorm-research-preview-24b-first-chapter-only",
-)
+cmd = [
+    "python3", "-m", "vllm.entrypoints.openai.api_server",
+    "--model", MODEL,
+    "--host", "127.0.0.1", "--port", PORT,
+    "--dtype", os.environ.get("DTYPE", "bfloat16"),
+    "--max-model-len", os.environ.get("MAX_MODEL_LEN", "131072"),
+    "--gpu-memory-utilization", os.environ.get("GPU_MEMORY_UTILIZATION", "0.95"),
+]
+extra = os.environ.get("VLLM_EXTRA_ARGS", "").strip()
+if extra:
+    cmd += shlex.split(extra)
 
-print(f"[pagestorm-worker] cargando bundle (config+tokenizer) de {REPO} ...", flush=True)
-_profile = get_profile_by_repo_id(REPO)
-_bundle = load_story_bundle(profile_name=_profile.name, repo_id=REPO)
-print("[pagestorm-worker] bundle listo. A la espera de jobs.", flush=True)
+print("[worker] lanzando:", " ".join(cmd), flush=True)
+t0 = time.time()
+proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
+
+# esperar a que el server este listo (o morir si vllm muere)
+while True:
+    if proc.poll() is not None:
+        sys.exit(f"[worker] vllm murio en el arranque (exit {proc.returncode})")
+    try:
+        with urllib.request.urlopen(f"{BASE}/health", timeout=5) as r:
+            if r.status == 200:
+                break
+    except Exception:
+        pass
+    time.sleep(2)
+print(f"[worker] vLLM LISTO en {time.time()-t0:.1f}s", flush=True)
+
+
+def _post(path, body, timeout=600):
+    req = urllib.request.Request(
+        f"{BASE}{path}", data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
 
 
 def handler(job):
     inp = (job or {}).get("input", {}) or {}
-    prompt = inp.get("prompt")
-    if not prompt or not isinstance(prompt, str):
-        return {"error": "Falta 'prompt' (string) en input."}
-
-    gmu = float(inp.get("gpu_memory_utilization", 0.95))
-    mml = inp.get("max_model_len")
-    tp = int(inp.get("tensor_parallel_size", 1))
-
-    t0 = time.time()
-    print(f"[pagestorm-worker] generando para prompt: {prompt!r}", flush=True)
-    try:
-        run = generate_full_book(
-            _bundle,
-            prompt=prompt,
-            tensor_parallel_size=tp,
-            gpu_memory_utilization=gmu,
-            max_model_len=int(mml) if mml else None,
-        )
-    except Exception as e:
-        print("[pagestorm-worker] ERROR en generacion:", e, flush=True)
-        traceback.print_exc()
-        return {"error": f"{type(e).__name__}: {e}",
-                "traceback": traceback.format_exc()[-4000:]}
-
-    stages = {so.role: so.text for so in run.stage_outputs}
-    elapsed = round(time.time() - t0, 1)
-    print(f"[pagestorm-worker] listo en {elapsed}s "
-          f"(validation_success={run.validation_success})", flush=True)
-    return {
-        "prompt": prompt,
-        "model": run.model,
-        "validation_success": run.validation_success,
-        "failed_stage_role": run.failed_stage_role,
-        "elapsed_seconds": elapsed,
-        "chapter": stages.get("first_chapter_text", ""),
-        "stages": stages,
+    sp = inp.get("sampling_params", {}) or {}
+    common = {
+        "model": MODEL,
+        "max_tokens": int(sp.get("max_tokens", 256)),
+        "temperature": float(sp.get("temperature", 0.7)),
     }
+    try:
+        if "messages" in inp:
+            r = _post("/v1/chat/completions", {**common, "messages": inp["messages"]})
+            text = r["choices"][0]["message"]["content"]
+        elif "prompt" in inp:
+            r = _post("/v1/completions", {**common, "prompt": inp["prompt"]})
+            text = r["choices"][0]["text"]
+        else:
+            return {"error": "input necesita 'messages' o 'prompt'"}
+        return {"text": text, "usage": r.get("usage")}
+    except urllib.error.HTTPError as e:
+        return {"error": f"HTTP {e.code}", "body": e.read().decode()[:1000]}
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
 
 
 runpod.serverless.start({"handler": handler})
