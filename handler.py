@@ -1,8 +1,9 @@
-"""Worker RunPod serverless sobre vLLM moderno (imagen oficial).
+"""Worker RunPod serverless sobre vLLM 0.24 (imagen oficial).
 
-Arranca `vllm serve` (API OpenAI) como subproceso y reenvia los jobs de RunPod
-a localhost. Todo lo de vLLM es configurable por env sin rebuild:
-  MODEL_NAME, MAX_MODEL_LEN, GPU_MEMORY_UTILIZATION, VLLM_EXTRA_ARGS
+Anti-ceguera: cualquier fallo imprime traceback y duerme 60s antes de salir,
+para que el recolector de logs de RunPod llegue a capturarlo.
+Config por env sin rebuild: MODEL_NAME, DTYPE, MAX_MODEL_LEN,
+GPU_MEMORY_UTILIZATION, VLLM_EXTRA_ARGS.
 """
 import json
 import os
@@ -10,10 +11,27 @@ import shlex
 import subprocess
 import sys
 import time
-import urllib.request
-import urllib.error
+import traceback
 
-import runpod
+print("[worker] handler.py arrancando (python OK)", flush=True)
+
+
+def fatal(msg, exc=True):
+    print(f"[worker][FATAL] {msg}", flush=True)
+    if exc:
+        traceback.print_exc()
+    print("[worker] durmiendo 60s para que el log se capture...", flush=True)
+    time.sleep(60)
+    sys.exit(1)
+
+
+try:
+    import urllib.request
+    import urllib.error
+    import runpod
+    print("[worker] imports OK (runpod %s)" % getattr(runpod, "__version__", "?"), flush=True)
+except Exception:
+    fatal("fallo importando dependencias")
 
 MODEL = os.environ.get("MODEL_NAME", "google/gemma-4-31B-it")
 PORT = "8000"
@@ -29,22 +47,32 @@ cmd = [
 ]
 extra = os.environ.get("VLLM_EXTRA_ARGS", "").strip()
 if extra:
-    cmd += shlex.split(extra)
+    try:
+        cmd += shlex.split(extra)
+    except Exception:
+        fatal(f"VLLM_EXTRA_ARGS no parsea: {extra!r}")
 
 print("[worker] lanzando:", " ".join(cmd), flush=True)
 t0 = time.time()
-proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
+try:
+    proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
+except Exception:
+    fatal("Popen de vllm fallo")
 
-# esperar a que el server este listo (o morir si vllm muere)
 while True:
-    if proc.poll() is not None:
-        sys.exit(f"[worker] vllm murio en el arranque (exit {proc.returncode})")
+    rc = proc.poll()
+    if rc is not None:
+        fatal(f"vllm murio en el arranque con exit code {rc} "
+              f"(a los {time.time()-t0:.0f}s) — su error debe estar arriba", exc=False)
     try:
         with urllib.request.urlopen(f"{BASE}/health", timeout=5) as r:
             if r.status == 200:
                 break
     except Exception:
         pass
+    el = int(time.time() - t0)
+    if el and el % 60 < 2:
+        print(f"[worker] esperando a vLLM... {el}s", flush=True)
     time.sleep(2)
 print(f"[worker] vLLM LISTO en {time.time()-t0:.1f}s", flush=True)
 
@@ -81,4 +109,7 @@ def handler(job):
         return {"error": f"{type(e).__name__}: {e}"}
 
 
-runpod.serverless.start({"handler": handler})
+try:
+    runpod.serverless.start({"handler": handler})
+except Exception:
+    fatal("runpod.serverless.start fallo")
